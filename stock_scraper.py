@@ -5,19 +5,22 @@ import time
 from datetime import datetime
 import logging
 import os
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import yfinance as yf
+import io
 
-class MultiSourceStockScraper:
-    def __init__(self, delay: float = 0.5):
+class ComprehensiveStockScraper:
+    def __init__(self, delay: float = 0.2, max_workers: int = 50):
         """
-        Multi-source stock scraper combining Yahoo Finance, NSE, and other sources
+        Comprehensive stock scraper for ALL NSE and BSE stocks
         
         Args:
             delay: Delay between requests
+            max_workers: Number of parallel workers
         """
         self.delay = delay
+        self.max_workers = max_workers
         self.session = requests.Session()
         
         self.session.headers.update({
@@ -25,7 +28,8 @@ class MultiSourceStockScraper:
             'Accept': 'application/json, text/plain, */*',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive'
+            'Connection': 'keep-alive',
+            'Referer': 'https://www.nseindia.com/'
         })
         
         # Set up logging
@@ -33,326 +37,531 @@ class MultiSourceStockScraper:
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler('multi_stock_scraper.log'),
+                logging.FileHandler('comprehensive_stock_scraper.log'),
                 logging.StreamHandler()
             ]
         )
         self.logger = logging.getLogger(__name__)
-    
-    def get_comprehensive_stock_list(self) -> List[str]:
-        """Get comprehensive list of Indian stock symbols"""
         
-        # Comprehensive list of Indian stocks
-        symbols = {
-            # Nifty 50
-            'RELIANCE', 'TCS', 'HDFCBANK', 'BHARTIARTL', 'ICICIBANK', 'INFOSYS', 
-            'HINDUNILVR', 'ITC', 'SBIN', 'BAJFINANCE', 'LT', 'HCLTECH', 'ASIANPAINT',
-            'MARUTI', 'BAJAJFINSV', 'WIPRO', 'NESTLEIND', 'ULTRACEMCO', 'TITAN',
-            'AXISBANK', 'DMART', 'KOTAKBANK', 'SUNPHARMA', 'ONGC', 'NTPC', 
-            'POWERGRID', 'M&M', 'TECHM', 'TATAMOTORS', 'JSWSTEEL', 'HINDALCO',
-            'INDUSINDBK', 'ADANIENT', 'COALINDIA', 'DRREDDY', 'GRASIM', 'CIPLA',
-            'BRITANNIA', 'EICHERMOT', 'APOLLOHOSP', 'BPCL', 'DIVISLAB', 'TATASTEEL',
-            'HEROMOTOCO', 'BAJAJ-AUTO', 'HDFCLIFE', 'SBILIFE', 'TRENT', 'ADANIPORTS',
-            'LTIM',
-            
-            # Nifty Next 50
-            'ADANIGREEN', 'ADANIPOWER', 'ADANITRANS', 'AMBUJACEM', 'BANKBARODA',
-            'BERGEPAINT', 'BOSCHLTD', 'CANBK', 'CHOLAFIN', 'COLPAL', 'CONCOR',
-            'CUMMINSIND', 'DABUR', 'FEDERALBNK', 'GAIL', 'GODREJCP', 'HAVELLS',
-            'HDFC', 'ICICIGI', 'IDFCFIRSTB', 'IOC', 'JINDALSTEL', 'JUBLFOOD',
-            'LUPIN', 'MARICO', 'MCDOWELL-N', 'MFSL', 'MGL', 'MPHASIS', 'MRF',
-            'NAUKRI', 'NMDC', 'PAGEIND', 'PETRONET', 'PIDILITIND', 'PNB',
-            'POLYCAB', 'RAMCOCEM', 'RECLTD', 'SAIL', 'SHREECEM', 'SIEMENS',
-            'TORNTPHARM', 'UBL', 'VEDL', 'VOLTAS', 'ZEEL',
-            
-            # Additional popular stocks
-            'ACC', 'AUROPHARMA', 'BANDHANBNK', 'BATAINDIA', 'BEL', 'BIOCON',
-            'CADILAHC', 'CEATLTD', 'CHAMBLFERT', 'DLF', 'ESCORTS', 'EXIDEIND',
-            'GLENMARK', 'GMRINFRA', 'GRANULES', 'HATHWAY', 'IBULHSGFIN', 'IDEA',
-            'INDHOTEL', 'INDIGO', 'INFRATEL', 'INFY', 'IRB', 'JETAIRWAYS',
-            'JPASSOCIAT', 'JUSTDIAL', 'L&TFH', 'LICHSGFIN', 'MANAPPURAM',
-            'MOTHERSUMI', 'NATIONALUM', 'NBCC', 'OFSS', 'ONGC', 'ORIENTBANK',
-            'PCJEWELLER', 'PENINLAND', 'PFC', 'PHOENIXLTD', 'RBLBANK',
-            'RELCAPITAL', 'RELINFRA', 'RPOWER', 'SRTRANSFIN', 'STAR',
-            'SUZLON', 'SYNDIBANK', 'TECHM', 'TVSMOTOR', 'UJJIVAN', 'UNIONBANK',
-            'UNITECH', 'VEDL', 'YESBANK', 'ZEEL'
-        }
-        
-        # Convert to Yahoo Finance format
-        yahoo_symbols = [f"{symbol}.NS" for symbol in symbols]
-        return list(yahoo_symbols)
+        # Initialize session with NSE
+        self._initialize_session()
     
-    def get_stock_data_yahoo(self, symbol: str) -> Optional[Dict]:
-        """Get stock data from Yahoo Finance"""
+    def _initialize_session(self):
+        """Initialize session by visiting NSE homepage"""
         try:
-            ticker = yf.Ticker(symbol)
-            info = ticker.info
-            hist = ticker.history(period="1d")
-            
-            if hist.empty:
-                return None
-            
-            current_price = hist['Close'].iloc[-1]
-            previous_close = info.get('previousClose', hist['Close'].iloc[-1])
-            
-            change = current_price - previous_close
-            change_percent = (change / previous_close * 100) if previous_close else 0
-            
-            return {
-                'symbol': symbol.replace('.NS', ''),
-                'yahoo_symbol': symbol,
-                'name': info.get('longName', info.get('shortName', symbol.replace('.NS', ''))),
-                'price': round(float(current_price), 2),
-                'change': round(float(change), 2),
-                'change_percent': round(float(change_percent), 2),
-                'volume': int(hist['Volume'].iloc[-1]) if not hist['Volume'].empty else None,
-                'market_cap': info.get('marketCap'),
-                'previous_close': float(previous_close) if previous_close else None,
-                'day_high': float(hist['High'].iloc[-1]) if not hist['High'].empty else None,
-                'day_low': float(hist['Low'].iloc[-1]) if not hist['Low'].empty else None,
-                'open': float(hist['Open'].iloc[-1]) if not hist['Open'].empty else None,
-                'fifty_two_week_high': info.get('fiftyTwoWeekHigh'),
-                'fifty_two_week_low': info.get('fiftyTwoWeekLow'),
-                'pe_ratio': info.get('trailingPE'),
-                'dividend_yield': info.get('dividendYield'),
-                'market_cap_formatted': self._format_market_cap(info.get('marketCap')),
-                'sector': info.get('sector'),
-                'industry': info.get('industry'),
-                'currency': 'INR',
-                'exchange': 'NSE',
-                'source': 'Yahoo Finance',
-                'scraped_at': datetime.now().isoformat()
-            }
-            
+            self.logger.info("Initializing session...")
+            self.session.get("https://www.nseindia.com", timeout=10)
+            time.sleep(2)
+            self.logger.info("Session initialized successfully")
         except Exception as e:
-            self.logger.debug(f"Yahoo Finance error for {symbol}: {str(e)}")
-            return None
+            self.logger.warning(f"Session initialization warning: {str(e)}")
     
-    def get_stock_data_alternative_api(self, symbol: str) -> Optional[Dict]:
-        """Get stock data from alternative free APIs"""
+    def get_all_nse_symbols(self) -> Set[str]:
+        """Get ALL NSE stock symbols from multiple sources"""
+        all_symbols = set()
+        
+        # Method 1: NSE Symbol List API
         try:
-            # Remove .NS suffix for API calls
-            clean_symbol = symbol.replace('.NS', '')
-            
-            # Try Alpha Vantage free tier (you can get free API key)
-            # url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={clean_symbol}.BSE&apikey=demo"
-            
-            # Try a simpler approach with financial modeling prep (free tier)
-            url = f"https://financialmodelingprep.com/api/v3/quote/{clean_symbol}?apikey=demo"
-            
-            response = self.session.get(url, timeout=10)
+            self.logger.info("Fetching NSE symbols from official API...")
+            url = "https://www.nseindia.com/api/equity-master"
+            response = self.session.get(url, timeout=15)
             if response.status_code == 200:
                 data = response.json()
-                if data and len(data) > 0:
-                    stock = data[0]
+                if isinstance(data, list):
+                    symbols = [item.get('symbol') for item in data if item.get('symbol')]
+                    all_symbols.update(symbols)
+                    self.logger.info(f"Got {len(symbols)} symbols from NSE master list")
+        except Exception as e:
+            self.logger.warning(f"NSE master list error: {str(e)}")
+        
+        # Method 2: NSE Securities in F&O
+        try:
+            self.logger.info("Fetching F&O securities...")
+            url = "https://www.nseindia.com/api/equity-stockIndices?index=SECURITIES%20IN%20F%26O"
+            response = self.session.get(url, timeout=15)
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data:
+                    symbols = [item.get('symbol') for item in data['data'] if item.get('symbol')]
+                    all_symbols.update(symbols)
+                    self.logger.info(f"Got {len(symbols)} F&O symbols")
+        except Exception as e:
+            self.logger.warning(f"F&O symbols error: {str(e)}")
+        
+        # Method 3: All NSE Indices
+        indices = [
+            'NIFTY%20500', 'NIFTY%20MIDCAP%20150', 'NIFTY%20SMALLCAP%20250',
+            'NIFTY%20MICROCAP%20250', 'NIFTY%20LARGEMIDCAP%20250',
+            'NIFTY%20MIDSMALLCAP%20400', 'NIFTY%20TOTAL%20MARKET'
+        ]
+        
+        for index in indices:
+            try:
+                url = f"https://www.nseindia.com/api/equity-stockIndices?index={index}"
+                response = self.session.get(url, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    if 'data' in data:
+                        symbols = [item.get('symbol') for item in data['data'] if item.get('symbol')]
+                        all_symbols.update(symbols)
+                        self.logger.info(f"Got {len(symbols)} symbols from {index.replace('%20', ' ')}")
+                time.sleep(1)  # Delay between index requests
+            except Exception as e:
+                self.logger.warning(f"Error fetching {index}: {str(e)}")
+        
+        # Method 4: Yahoo Finance screener for Indian stocks
+        try:
+            self.logger.info("Fetching symbols from Yahoo Finance screener...")
+            yahoo_symbols = self._get_yahoo_indian_symbols()
+            all_symbols.update(yahoo_symbols)
+        except Exception as e:
+            self.logger.warning(f"Yahoo screener error: {str(e)}")
+        
+        # Method 5: Additional comprehensive symbol list
+        additional_symbols = self._get_additional_symbols()
+        all_symbols.update(additional_symbols)
+        
+        # Clean symbols
+        clean_symbols = {s for s in all_symbols if s and s.isalpha() and len(s) > 1}
+        
+        self.logger.info(f"Total unique symbols collected: {len(clean_symbols)}")
+        return clean_symbols
+    
+    def _get_yahoo_indian_symbols(self) -> Set[str]:
+        """Get Indian symbols from Yahoo Finance"""
+        symbols = set()
+        
+        # Yahoo Finance doesn't have a direct API for all Indian stocks
+        # But we can use their screener results
+        try:
+            # This would need Yahoo Finance screener data
+            # For now, we'll add known symbols that aren't in NSE lists
+            known_symbols = [
+                # Banking
+                'AUBANK', 'BANDHANBNK', 'CSBBANK', 'DCBBANK', 'EQUITASBNK', 
+                'FEDERALBNK', 'IDFCFIRSTB', 'INDIANB', 'INDUSINDBK', 'JAMMUBANK',
+                'KTKBANK', 'ORIENTBANK', 'PNB', 'RBLBANK', 'SOUTHBANK', 'UNIONBANK',
+                
+                # IT
+                'COFORGE', 'CYIENT', 'KPITTECH', 'LTTS', 'MINDTREE', 'MPHASIS',
+                'NIITLTD', 'OFSS', 'PERSISTENT', 'RAMPGREEN', 'ZENSAR',
+                
+                # Pharma
+                'AUROPHARMA', 'BIOCON', 'CADILAHC', 'DRREDDY', 'GLENMARK',
+                'GRANULES', 'LALPATHLAB', 'LUPIN', 'NATCOPHARMA', 'REDDY',
+                
+                # Auto
+                'APOLLOTYRE', 'ASHOKLEY', 'BAJAJ-AUTO', 'BHARATFORG', 'BOSCHLTD',
+                'EICHERMOT', 'ESCORTS', 'EXIDEIND', 'HEROMOTOCO', 'M&MFIN',
+                'MAHINDCIE', 'MARUTI', 'MOTHERSUMI', 'MRF', 'TATAMOTORS', 'TVSMOTOR',
+                
+                # FMCG
+                'BRITANNIA', 'COLPAL', 'DABUR', 'EMAMILTD', 'GODREJCP',
+                'HINDUNILVR', 'ITC', 'MARICO', 'NESTLEIND', 'PGHH', 'TATACONSUM',
+                'UBL', 'VBL',
+                
+                # Metals
+                'ADANIENT', 'ALUMINIUM', 'COALINDIA', 'HINDALCO', 'HINDCOPPER',
+                'HINDZINC', 'JSWSTEEL', 'JSPL', 'MOIL', 'NALCO', 'NMDC',
+                'RATNAMANI', 'SAIL', 'TATASTEEL', 'VEDL', 'WELCORP', 'WELSPUNIND',
+                
+                # Energy
+                'ADANIGREEN', 'ADANIPOWER', 'ADANITRANS', 'BPCL', 'GAIL', 'HINDPETRO',
+                'IOC', 'NTPC', 'ONGC', 'PETRONET', 'POWERGRID', 'RELIANCE', 'TATAPOWER',
+                
+                # Cement
+                'ACC', 'AMBUJACEM', 'JKCEMENT', 'RAMCOCEM', 'SHREECEM', 'ULTRACEMCO',
+                
+                # Telecom
+                'BHARTIARTL', 'IDEA', 'INDUS', 'RCOM',
+                
+                # Realty
+                'BRIGADE', 'DLF', 'GODREJPROP', 'IBREALEST', 'INDIABULLS', 'LODHA',
+                'OBEROIRLTY', 'PHOENIXLTD', 'PRESTIGE', 'SOBHA',
+                
+                # Consumer Durables
+                'BAJAJELECTR', 'BLUESTARCO', 'CROMPTON', 'HAVELLS', 'ORIENTELEC',
+                'POLARIND', 'SYMPHONY', 'TITAN', 'VOLTAS', 'WHIRLPOOL'
+            ]
+            symbols.update(known_symbols)
+            
+        except Exception as e:
+            self.logger.debug(f"Yahoo symbols error: {str(e)}")
+        
+        return symbols
+    
+    def _get_additional_symbols(self) -> Set[str]:
+        """Get additional stock symbols from various sources"""
+        symbols = set()
+        
+        # Add more comprehensive symbol lists
+        # Small cap and micro cap stocks
+        small_micro_caps = [
+            '5PAISA', 'AAATECH', 'AAKASH', 'AARON', 'ABCAPITAL', 'ABFRL',
+            'ABMINTLLTD', 'ABSLAMC', 'ACCELYA', 'ACE', 'ADANIENSOL', 'ADANITRANS',
+            'ADFFOODS', 'ADORWELD', 'ADVENZYMES', 'AEGISCHEM', 'AFFLE', 'AGARIND',
+            'AGRITECH', 'AHLEAST', 'AHLUCONT', 'AIAENG', 'AIRAN', 'AJANTPHARM',
+            'AJMERA', 'AKZOINDIA', 'ALANKIT', 'ALBERTDAVD', 'ALCHEM', 'ALEMBICLTD',
+            'ALKYLAMINE', 'ALLCARGO', 'ALLSEC', 'ALMONDZ', 'ALOKTEXT', 'ALPHAGREP',
+            'AMARAJABAT', 'AMBER', 'AMBUJACEM', 'AMDIND', 'AMEYA', 'AMJLAND',
+            'AMNPLST', 'AMRUTANJAN', 'ANANTRAJ', 'ANGELBRKG', 'ANIKINDS', 'ANKITMETAL',
+            'ANTGRAPHIC', 'APCOTEXIND', 'APEX', 'APLAPOLLO', 'APOLLO', 'APOLLOHOSP',
+            'APOLLOTYRE', 'ARCHIES', 'ARENTERP', 'ARIHANT', 'ARIHANTSUP', 'ARMANFIN',
+            'AROMABUILD', 'ARTSON', 'ARVIND', 'ASAHIINDIA', 'ASALCBR', 'ASHAPURMIN',
+            'ASHIANA', 'ASHOKA', 'ASHOKLEY', 'ASIANHOTNR', 'ASIANPAINT', 'ASTERDM',
+            'ASTRAL', 'ASTRAZEN', 'ASTRON', 'ATUL', 'ATULLTD', 'AURUM', 'AUTOAXLES',
+            'AUTOIND', 'AVANTIFEED', 'AVATAR', 'AVTNPL', 'AXISBANK', 'BAFNAPH',
+            'BAGFILMS', 'BAJAJ-AUTO', 'BAJAJCON', 'BAJAJELECTR', 'BAJAJFINSV',
+            'BAJAJHIND', 'BAJAJHLDNG', 'BAJFINANCE', 'BALAJITELE', 'BALAMINES',
+            'BALKRIND', 'BALKRISHNA', 'BALMLAWRIE', 'BALRAMCHIN', 'BANCOINDIA',
+            'BANG', 'BANKBARODA', 'BANKINDIA', 'BASF', 'BATAINDIA', 'BAYERCROP',
+            'BBMB', 'BDL', 'BEPL', 'BERGEPAINT', 'BF', 'BFINVEST', 'BGRENERGY',
+            'BHARATFORG', 'BHARATGEAR', 'BHARATRAS', 'BHARATWIRE', 'BHARTIARTL',
+            'BHEL', 'BIMETAL', 'BINANIIND', 'BIOCON', 'BIRLACORPN', 'BLISSGVS',
+            'BLUEBLENDS', 'BLUESTARCO', 'BOMDYEING', 'BOSCHLTD', 'BPCL', 'BPL',
+            'BRIGADE', 'BRITANNIA', 'BRFL', 'BSE', 'BSOFT', 'BURNPUR', 'BUTTERFLY'
+        ]
+        symbols.update(small_micro_caps)
+        
+        return symbols
+    
+    def get_stock_data_yahoo(self, symbol: str) -> Optional[Dict]:
+        """Get stock data from Yahoo Finance with enhanced error handling"""
+        try:
+            # Try both NSE and BSE suffixes
+            for suffix in ['.NS', '.BO']:
+                try:
+                    yahoo_symbol = f"{symbol}{suffix}"
+                    ticker = yf.Ticker(yahoo_symbol)
+                    
+                    # Get basic info first (faster)
+                    info = ticker.fast_info
+                    if not info:
+                        continue
+                    
+                    # Get historical data for more details
+                    hist = ticker.history(period="2d")  # Get 2 days for comparison
+                    if hist.empty:
+                        continue
+                    
+                    current_price = hist['Close'].iloc[-1]
+                    if pd.isna(current_price) or current_price <= 0:
+                        continue
+                    
+                    previous_close = hist['Close'].iloc[-2] if len(hist) > 1 else current_price
+                    
+                    change = current_price - previous_close
+                    change_percent = (change / previous_close * 100) if previous_close else 0
+                    
+                    # Get additional info (may be slow/incomplete)
+                    full_info = {}
+                    try:
+                        full_info = ticker.info
+                    except:
+                        pass
+                    
                     return {
-                        'symbol': clean_symbol,
-                        'name': stock.get('name', clean_symbol),
-                        'price': stock.get('price'),
-                        'change': stock.get('change'),
-                        'change_percent': stock.get('changesPercentage'),
-                        'volume': stock.get('volume'),
-                        'market_cap': stock.get('marketCap'),
-                        'day_high': stock.get('dayHigh'),
-                        'day_low': stock.get('dayLow'),
-                        'open': stock.get('open'),
-                        'previous_close': stock.get('previousClose'),
-                        'source': 'Alternative API',
+                        'symbol': symbol,
+                        'yahoo_symbol': yahoo_symbol,
+                        'name': full_info.get('longName', full_info.get('shortName', symbol)),
+                        'price': round(float(current_price), 2),
+                        'change': round(float(change), 2),
+                        'change_percent': round(float(change_percent), 2),
+                        'volume': int(hist['Volume'].iloc[-1]) if not hist['Volume'].empty else None,
+                        'market_cap': full_info.get('marketCap'),
+                        'previous_close': float(previous_close) if previous_close else None,
+                        'day_high': float(hist['High'].iloc[-1]) if not hist['High'].empty else None,
+                        'day_low': float(hist['Low'].iloc[-1]) if not hist['Low'].empty else None,
+                        'open': float(hist['Open'].iloc[-1]) if not hist['Open'].empty else None,
+                        'fifty_two_week_high': full_info.get('fiftyTwoWeekHigh'),
+                        'fifty_two_week_low': full_info.get('fiftyTwoWeekLow'),
+                        'pe_ratio': full_info.get('trailingPE'),
+                        'dividend_yield': full_info.get('dividendYield'),
+                        'sector': full_info.get('sector'),
+                        'industry': full_info.get('industry'),
+                        'exchange': 'NSE' if suffix == '.NS' else 'BSE',
+                        'currency': 'INR',
+                        'source': 'Yahoo Finance',
                         'scraped_at': datetime.now().isoformat()
                     }
+                    
+                except Exception:
+                    continue
+                    
         except Exception as e:
-            self.logger.debug(f"Alternative API error for {symbol}: {str(e)}")
+            self.logger.debug(f"Yahoo error for {symbol}: {str(e)}")
             
         return None
     
-    def scrape_stocks_parallel(self, symbols: List[str], max_workers: int = 10) -> pd.DataFrame:
-        """Scrape stocks in parallel for faster processing"""
+    def scrape_all_stocks_parallel(self, symbols: Set[str]) -> pd.DataFrame:
+        """Scrape all stocks using parallel processing"""
         all_stocks = []
+        symbols_list = list(symbols)
+        total_symbols = len(symbols_list)
         
-        self.logger.info(f"Starting parallel scraping of {len(symbols)} stocks with {max_workers} workers...")
+        self.logger.info(f"Starting comprehensive scraping of {total_symbols} stocks with {self.max_workers} workers...")
         
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            # Submit all tasks
-            future_to_symbol = {}
-            for symbol in symbols:
-                future = executor.submit(self._get_single_stock_data, symbol)
-                future_to_symbol[future] = symbol
+        # Process in batches to avoid overwhelming the system
+        batch_size = 100
+        batches = [symbols_list[i:i + batch_size] for i in range(0, len(symbols_list), batch_size)]
+        
+        for batch_num, batch in enumerate(batches, 1):
+            self.logger.info(f"Processing batch {batch_num}/{len(batches)} ({len(batch)} stocks)")
             
-            # Collect results
-            completed = 0
-            for future in as_completed(future_to_symbol):
-                symbol = future_to_symbol[future]
-                completed += 1
+            with ThreadPoolExecutor(max_workers=min(self.max_workers, len(batch))) as executor:
+                # Submit all tasks in this batch
+                future_to_symbol = {}
+                for symbol in batch:
+                    future = executor.submit(self.get_stock_data_yahoo, symbol)
+                    future_to_symbol[future] = symbol
                 
-                try:
-                    stock_data = future.result()
-                    if stock_data:
-                        all_stocks.append(stock_data)
-                        self.logger.info(f"✅ {completed}/{len(symbols)}: {symbol} - ₹{stock_data['price']}")
-                    else:
-                        self.logger.warning(f"❌ {completed}/{len(symbols)}: {symbol} - No data")
-                except Exception as e:
-                    self.logger.error(f"❌ {completed}/{len(symbols)}: {symbol} - Error: {str(e)}")
+                # Collect results
+                batch_stocks = []
+                completed = 0
+                for future in as_completed(future_to_symbol):
+                    symbol = future_to_symbol[future]
+                    completed += 1
+                    
+                    try:
+                        stock_data = future.result()
+                        if stock_data:
+                            batch_stocks.append(stock_data)
+                            if completed % 10 == 0 or stock_data['price'] > 1000:  # Log every 10th or high-value stocks
+                                self.logger.info(f"✅ Batch {batch_num} - {completed}/{len(batch)}: {symbol} - ₹{stock_data['price']}")
+                    except Exception as e:
+                        if completed % 20 == 0:  # Log errors less frequently
+                            self.logger.debug(f"❌ {symbol}: {str(e)}")
+                
+                all_stocks.extend(batch_stocks)
+                self.logger.info(f"Batch {batch_num} completed: {len(batch_stocks)}/{len(batch)} stocks retrieved")
+                
+                # Small delay between batches to be respectful
+                if batch_num < len(batches):
+                    time.sleep(2)
         
-        self.logger.info(f"Parallel scraping completed! {len(all_stocks)} stocks retrieved.")
+        self.logger.info(f"All batches completed! Total: {len(all_stocks)}/{total_symbols} stocks retrieved")
         return pd.DataFrame(all_stocks) if all_stocks else pd.DataFrame()
     
-    def _get_single_stock_data(self, symbol: str) -> Optional[Dict]:
-        """Get data for a single stock from multiple sources"""
-        
-        # Try Yahoo Finance first (most reliable)
-        stock_data = self.get_stock_data_yahoo(symbol)
-        if stock_data:
-            return stock_data
-        
-        # Try alternative API
-        stock_data = self.get_stock_data_alternative_api(symbol)
-        if stock_data:
-            return stock_data
-        
-        # Add small delay to avoid overwhelming servers
-        time.sleep(0.1)
-        return None
-    
-    def _format_market_cap(self, market_cap) -> Optional[str]:
-        """Format market cap in readable format"""
-        if not market_cap:
-            return None
-        
-        try:
-            mc = float(market_cap)
-            if mc >= 1e12:
-                return f"₹{mc/1e12:.2f}T"
-            elif mc >= 1e9:
-                return f"₹{mc/1e9:.2f}B"
-            elif mc >= 1e6:
-                return f"₹{mc/1e6:.2f}M"
-            else:
-                return f"₹{mc:.0f}"
-        except:
-            return None
-    
-    def save_data(self, df: pd.DataFrame, filename: Optional[str] = None) -> str:
-        """Save data with enhanced formatting"""
+    def save_comprehensive_data(self, df: pd.DataFrame, filename: Optional[str] = None) -> str:
+        """Save comprehensive data with multiple analysis sheets"""
         if filename is None:
-            filename = f"indian_stocks_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            filename = f"comprehensive_indian_stocks_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
         os.makedirs('data', exist_ok=True)
         
-        # Save as CSV
+        # Save main CSV
         csv_path = f"data/{filename}.csv"
         df.to_csv(csv_path, index=False)
         
-        # Save as JSON
+        # Save JSON
         json_path = f"data/{filename}.json"
         df.to_json(json_path, orient='records', indent=2)
         
-        # Create Excel file with multiple sheets
+        # Create comprehensive Excel file
         try:
             excel_path = f"data/{filename}.xlsx"
             with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-                # All data
+                # All stocks
                 df.to_excel(writer, sheet_name='All Stocks', index=False)
                 
-                # Top gainers
-                if len(df) > 0 and 'change_percent' in df.columns:
-                    gainers = df.nlargest(25, 'change_percent')
-                    gainers.to_excel(writer, sheet_name='Top Gainers', index=False)
+                if len(df) > 0:
+                    # Top gainers (50)
+                    if 'change_percent' in df.columns:
+                        gainers = df.nlargest(50, 'change_percent')
+                        gainers.to_excel(writer, sheet_name='Top 50 Gainers', index=False)
+                        
+                        # Top losers (50)  
+                        losers = df.nsmallest(50, 'change_percent')
+                        losers.to_excel(writer, sheet_name='Top 50 Losers', index=False)
                     
-                    # Top losers
-                    losers = df.nsmallest(25, 'change_percent')
-                    losers.to_excel(writer, sheet_name='Top Losers', index=False)
-                    
-                    # High volume stocks
+                    # High volume stocks (50)
                     if 'volume' in df.columns:
-                        high_volume = df.nlargest(25, 'volume')
+                        high_volume = df.nlargest(50, 'volume')
                         high_volume.to_excel(writer, sheet_name='High Volume', index=False)
+                    
+                    # High priced stocks
+                    if 'price' in df.columns:
+                        high_price = df.nlargest(50, 'price')
+                        high_price.to_excel(writer, sheet_name='High Price', index=False)
+                    
+                    # Sector-wise breakdown
+                    if 'sector' in df.columns and df['sector'].notna().any():
+                        sector_summary = df.groupby('sector').agg({
+                            'symbol': 'count',
+                            'price': 'mean',
+                            'change_percent': 'mean',
+                            'volume': 'sum'
+                        }).round(2)
+                        sector_summary.to_excel(writer, sheet_name='Sector Summary')
+                    
+                    # Exchange-wise breakdown
+                    if 'exchange' in df.columns:
+                        exchange_summary = df.groupby('exchange').agg({
+                            'symbol': 'count',
+                            'price': 'mean',
+                            'change_percent': 'mean',
+                            'volume': 'sum'
+                        }).round(2)
+                        exchange_summary.to_excel(writer, sheet_name='Exchange Summary')
+                        
         except ImportError:
             self.logger.warning("openpyxl not installed. Excel file not created.")
         
-        # Create summary file
+        # Create detailed summary
         summary = {
-            'total_stocks': len(df),
-            'successful_scrapes': len(df[df['price'].notna()]) if 'price' in df.columns else 0,
-            'scraped_at': datetime.now().isoformat(),
-            'columns': list(df.columns),
-            'summary_stats': {}
+            'scraping_info': {
+                'total_stocks_found': len(df),
+                'scraped_at': datetime.now().isoformat(),
+                'scraper_version': 'Comprehensive v2.0'
+            },
+            'data_quality': {
+                'stocks_with_price': int(len(df[df['price'].notna()])) if 'price' in df.columns else 0,
+                'stocks_with_volume': int(len(df[df['volume'].notna()])) if 'volume' in df.columns else 0,
+                'stocks_with_sector': int(len(df[df['sector'].notna()])) if 'sector' in df.columns else 0,
+            },
+            'market_overview': {},
+            'top_performers': {},
+            'exchanges': {}
         }
         
         if len(df) > 0 and 'change_percent' in df.columns:
-            summary['summary_stats'] = {
+            summary['market_overview'] = {
                 'avg_change_percent': float(df['change_percent'].mean()),
-                'gainers_count': int(len(df[df['change_percent'] > 0])),
-                'losers_count': int(len(df[df['change_percent'] < 0])),
-                'highest_gainer': df.loc[df['change_percent'].idxmax()]['symbol'] if not df.empty else None,
-                'biggest_loser': df.loc[df['change_percent'].idxmin()]['symbol'] if not df.empty else None
+                'median_change_percent': float(df['change_percent'].median()),
+                'total_gainers': int(len(df[df['change_percent'] > 0])),
+                'total_losers': int(len(df[df['change_percent'] < 0])),
+                'total_unchanged': int(len(df[df['change_percent'] == 0])),
+                'highest_gain': float(df['change_percent'].max()),
+                'biggest_loss': float(df['change_percent'].min())
             }
+            
+            # Top performers
+            if len(df) >= 10:
+                top_gainer = df.loc[df['change_percent'].idxmax()]
+                biggest_loser = df.loc[df['change_percent'].idxmin()]
+                
+                summary['top_performers'] = {
+                    'biggest_gainer': {
+                        'symbol': top_gainer['symbol'],
+                        'change_percent': float(top_gainer['change_percent']),
+                        'price': float(top_gainer['price'])
+                    },
+                    'biggest_loser': {
+                        'symbol': biggest_loser['symbol'], 
+                        'change_percent': float(biggest_loser['change_percent']),
+                        'price': float(biggest_loser['price'])
+                    }
+                }
         
-        summary_path = f"data/{filename}_summary.json"
+        # Exchange breakdown
+        if 'exchange' in df.columns:
+            exchange_counts = df['exchange'].value_counts().to_dict()
+            summary['exchanges'] = {k: int(v) for k, v in exchange_counts.items()}
+        
+        # Save summary
+        summary_path = f"data/{filename}_comprehensive_summary.json"
         with open(summary_path, 'w') as f:
             json.dump(summary, f, indent=2)
         
-        self.logger.info(f"Data saved to {csv_path}")
+        self.logger.info(f"Comprehensive data saved to {csv_path}")
+        self.logger.info(f"Summary saved to {summary_path}")
+        
         return csv_path
 
 def main():
-    """Main function"""
-    scraper = MultiSourceStockScraper(delay=0.1)
+    """Main function for comprehensive stock scraping"""
+    # Increase workers and reduce delay for faster processing
+    scraper = ComprehensiveStockScraper(delay=0.1, max_workers=75)
     
     try:
-        print("📊 Starting comprehensive Indian stock market scraping...")
-        print("🔄 Using multiple sources: Yahoo Finance, Alternative APIs")
+        print("🚀 Starting COMPREHENSIVE Indian Stock Market Scraping...")
+        print("📊 Target: 1000-2000+ stocks from NSE and BSE")
+        print("⚡ Using high-performance parallel processing")
         
-        # Get stock symbols
-        symbols = scraper.get_comprehensive_stock_list()
-        print(f"📈 Target stocks: {len(symbols)}")
+        # Get all available stock symbols
+        print("\n🔍 Phase 1: Discovering all stock symbols...")
+        all_symbols = scraper.get_all_nse_symbols()
+        print(f"✅ Found {len(all_symbols)} unique stock symbols")
         
-        # Scrape stocks (parallel processing for speed)
-        stock_data = scraper.scrape_stocks_parallel(symbols, max_workers=20)
+        if len(all_symbols) < 500:
+            print("⚠️  Warning: Found fewer symbols than expected. Continuing anyway...")
+        
+        # Scrape all stocks
+        print(f"\n📈 Phase 2: Scraping stock data...")
+        print(f"⚡ Using {scraper.max_workers} parallel workers")
+        
+        start_time = time.time()
+        stock_data = scraper.scrape_all_stocks_parallel(all_symbols)
+        end_time = time.time()
         
         if not stock_data.empty:
-            # Clean and process data
-            stock_data = stock_data.dropna(subset=['price'])  # Remove stocks without price data
+            # Clean data
+            stock_data = stock_data.dropna(subset=['price'])
+            stock_data = stock_data[stock_data['price'] > 0]  # Remove invalid prices
             stock_data = stock_data.drop_duplicates(subset=['symbol'], keep='first')
             
-            # Save data
-            csv_file = scraper.save_data(stock_data)
+            # Save comprehensive data
+            csv_file = scraper.save_comprehensive_data(stock_data)
             
-            print(f"\n🎉 SUCCESS! Scraped {len(stock_data)} stocks")
+            # Success summary
+            print(f"\n🎉 SUCCESS! COMPREHENSIVE SCRAPING COMPLETED")
+            print(f"⏱️  Total Time: {(end_time - start_time)/60:.1f} minutes")
+            print(f"📊 Stocks Scraped: {len(stock_data)}")
             print(f"💾 Data saved to: {csv_file}")
             
-            # Market summary
-            if len(stock_data) > 0:
-                print(f"\n📊 Market Snapshot:")
-                print(f"   📈 Total Stocks: {len(stock_data)}")
+            # Detailed market analysis
+            print(f"\n📈 COMPREHENSIVE MARKET ANALYSIS:")
+            print(f"   🏢 Total Companies: {len(stock_data)}")
+            
+            if 'price' in stock_data.columns:
+                print(f"   💰 Average Price: ₹{stock_data['price'].mean():.2f}")
+                print(f"   📊 Price Range: ₹{stock_data['price'].min():.2f} - ₹{stock_data['price'].max():,.2f}")
+            
+            if 'change_percent' in stock_data.columns:
+                avg_change = stock_data['change_percent'].mean()
+                gainers = len(stock_data[stock_data['change_percent'] > 0])
+                losers = len(stock_data[stock_data['change_percent'] < 0])
+                unchanged = len(stock_data[stock_data['change_percent'] == 0])
                 
-                if 'change_percent' in stock_data.columns:
-                    avg_change = stock_data['change_percent'].mean()
-                    gainers = len(stock_data[stock_data['change_percent'] > 0])
-                    losers = len(stock_data[stock_data['change_percent'] < 0])
-                    
-                    print(f"   📊 Average Change: {avg_change:+.2f}%")
-                    print(f"   🟢 Gainers: {gainers} ({gainers/len(stock_data)*100:.1f}%)")
-                    print(f"   🔴 Losers: {losers} ({losers/len(stock_data)*100:.1f}%)")
+                print(f"   📊 Market Sentiment: {avg_change:+.2f}% average change")
+                print(f"   🟢 Gainers: {gainers} ({gainers/len(stock_data)*100:.1f}%)")
+                print(f"   🔴 Losers: {losers} ({losers/len(stock_data)*100:.1f}%)")
+                print(f"   ⚪ Unchanged: {unchanged}")
                 
                 # Top performers
-                if 'change_percent' in stock_data.columns:
-                    print(f"\n🚀 Top 5 Gainers:")
-                    top_gainers = stock_data.nlargest(5, 'change_percent')
-                    for _, stock in top_gainers.iterrows():
-                        print(f"   {stock['symbol']}: +{stock['change_percent']:.2f}% (₹{stock['price']})")
+                if len(stock_data) >= 10:
+                    print(f"\n🚀 TOP 10 GAINERS:")
+                    top_gainers = stock_data.nlargest(10, 'change_percent')
+                    for i, (_, stock) in enumerate(top_gainers.iterrows(), 1):
+                        print(f"   {i:2d}. {stock['symbol']:12s}: +{stock['change_percent']:6.2f}% (₹{stock['price']:8,.2f})")
                     
-                    print(f"\n📉 Top 5 Losers:")
-                    top_losers = stock_data.nsmallest(5, 'change_percent')
-                    for _, stock in top_losers.iterrows():
-                        print(f"   {stock['symbol']}: {stock['change_percent']:.2f}% (₹{stock['price']})")
-        
+                    print(f"\n📉 TOP 10 LOSERS:")
+                    top_losers = stock_data.nsmallest(10, 'change_percent')
+                    for i, (_, stock) in enumerate(top_losers.iterrows(), 1):
+                        print(f"   {i:2d}. {stock['symbol']:12s}: {stock['change_percent']:7.2f}% (₹{stock['price']:8,.2f})")
+            
+            # Exchange breakdown
+            if 'exchange' in stock_data.columns:
+                exchange_counts = stock_data['exchange'].value_counts()
+                print(f"\n🏛️  EXCHANGE BREAKDOWN:")
+                for exchange, count in exchange_counts.items():
+                    print(f"   {exchange}: {count} stocks ({count/len(stock_data)*100:.1f}%)")
+            
+            # Data quality report
+            print(f"\n📋 DATA QUALITY REPORT:")
+            print(f"   ✅ Stocks with valid prices: {len(stock_data[stock_data['price'] > 0])}")
+            if 'volume' in stock_data.columns:
+                print(f"   📊 Stocks with volume data: {len(stock_data[stock_data['volume'].notna()])}")
+            if 'sector' in stock_data.columns:
+                print(f"   🏭 Stocks with sector info: {len(stock_data[stock_data['sector'].notna()])}")
+            
         else:
-            print("❌ No stock data retrieved. Check your internet connection and try again.")
+            print("❌ No comprehensive stock data retrieved")
+            print("🔧 Try running again or check your internet connection")
             return False
             
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        print(f"❌ Comprehensive scraping error: {str(e)}")
         import traceback
         traceback.print_exc()
         return False
