@@ -1,0 +1,136 @@
+name: Daily Stock Scraper
+
+on:
+  schedule:
+    # Run every day at 6:00 PM IST (12:30 PM UTC)
+    - cron: '30 12 * * *'
+  workflow_dispatch: # Allows manual trigger from GitHub UI
+    inputs:
+      debug:
+        description: 'Enable debug mode'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  scrape-stocks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: Set up Python 3.9
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Create data directory
+      run: mkdir -p data
+        
+    - name: Run stock scraper
+      run: |
+        echo "Starting stock scraper at $(date)"
+        python stock_scraper.py
+        echo "Stock scraper completed at $(date)"
+      env:
+        PYTHONUNBUFFERED: 1
+        
+    - name: Check scraped data
+      run: |
+        echo "=== Scraping Results ==="
+        if [ -d "data" ] && [ "$(ls -A data)" ]; then
+          echo "✅ Data files created:"
+          ls -la data/
+          echo ""
+          echo "📊 CSV file info:"
+          for file in data/*.csv; do
+            if [ -f "$file" ]; then
+              echo "File: $file"
+              echo "Size: $(du -h "$file" | cut -f1)"
+              echo "Lines: $(wc -l < "$file")"
+              echo "First few lines:"
+              head -3 "$file"
+              echo "---"
+            fi
+          done
+        else
+          echo "❌ No data files found"
+          exit 1
+        fi
+        
+    - name: Upload scraped data as artifacts
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: stock-data-${{ github.run_number }}-${{ github.run_attempt }}
+        path: |
+          data/
+          *.log
+        retention-days: 30
+        
+    - name: Upload latest data (overwrite previous)
+      uses: actions/upload-artifact@v3
+      if: success()
+      with:
+        name: latest-stock-data
+        path: data/
+        retention-days: 7
+        
+    - name: Commit and push data to repository (optional)
+      if: success() && github.event_name == 'schedule'
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action Bot"
+        git add data/ || true
+        git add *.log || true
+        
+        # Check if there are changes to commit
+        if git diff --staged --quiet; then
+          echo "No changes to commit"
+        else
+          git commit -m "📊 Daily stock data update - $(date '+%Y-%m-%d %H:%M:%S UTC')"
+          git push
+          echo "✅ Data committed and pushed to repository"
+        fi
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Create summary comment (for manual runs)
+      if: github.event_name == 'workflow_dispatch'
+      run: |
+        echo "## 📊 Stock Scraping Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Date:** $(date)" >> $GITHUB_STEP_SUMMARY
+        echo "**Trigger:** Manual" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f data/*.csv ]; then
+          CSV_FILE=$(ls data/*.csv | head -1)
+          RECORD_COUNT=$(tail -n +2 "$CSV_FILE" | wc -l)
+          FILE_SIZE=$(du -h "$CSV_FILE" | cut -f1)
+          echo "**Results:**" >> $GITHUB_STEP_SUMMARY
+          echo "- 📈 Records scraped: $RECORD_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- 📁 File size: $FILE_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Status: Success" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "- ❌ Status: Failed (no data files)" >> $GITHUB_STEP_SUMMARY
+        fi
+        
+    - name: Notify on failure
+      if: failure()
+      run: |
+        echo "❌ Stock scraping failed!"
+        echo "Check the logs above for details."
+        echo "Common issues:"
+        echo "1. Website structure changed"
+        echo "2. Network connectivity issues" 
+        echo "3. Rate limiting by website"
+        exit 1
